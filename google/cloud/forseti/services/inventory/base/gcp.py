@@ -31,6 +31,7 @@ from google.cloud.forseti.common.gcp_api import container
 from google.cloud.forseti.common.gcp_api import groups_settings
 from google.cloud.forseti.common.gcp_api import iam
 from google.cloud.forseti.common.gcp_api import servicemanagement
+from google.cloud.forseti.common.gcp_api import serviceusage
 from google.cloud.forseti.common.gcp_api import stackdriver_logging
 from google.cloud.forseti.common.gcp_api import storage
 
@@ -111,6 +112,32 @@ class ApiClient(with_metaclass(abc.ABCMeta, object)):
         Args:
             dataset_reference (dict): The project and dataset ID to get
                                       bigquery tables.
+        """
+
+    @abc.abstractmethod
+    def iter_bigtable_clusters(self, project_id, instance_id):
+        """Iterate Bigtable Clusters from GCP API.
+
+        Args:
+            project_id (str): The Project id.
+            instance_id (str): The Bigtable Instance id.
+        """
+
+    @abc.abstractmethod
+    def iter_bigtable_instances(self, project_number):
+        """Iterate Bigtable Instances from GCP API.
+
+        Args:
+            project_number (str): number of the project to query.
+        """
+
+    @abc.abstractmethod
+    def iter_bigtable_tables(self, project_id, instance_id):
+        """Iterate Bigtable Tables from GCP API.
+
+        Args:
+            project_id (str): The Project id.
+            instance_id (str): The Bigtable Instance id.
         """
 
     @abc.abstractmethod
@@ -340,6 +367,13 @@ class ApiClient(with_metaclass(abc.ABCMeta, object)):
     def iter_compute_routers(self, project_number):
         """Iterate Compute Engine routers from GCP API.
 
+        Args:
+            project_number (str): number of the project to query.
+        """
+
+    @abc.abstractmethod
+    def iter_compute_securitypolicies(self, project_number):
+        """Iterate Security Policies from GCP API.
         Args:
             project_number (str): number of the project to query.
         """
@@ -1039,6 +1073,7 @@ class ApiClientImpl(ApiClient):
         self.container = None
         self.iam = None
         self.servicemanagement = None
+        self.serviceusage = None
         self.stackdriver_logging = None
         self.storage = None
 
@@ -1209,6 +1244,22 @@ class ApiClientImpl(ApiClient):
                                        'server configuration.')
         return servicemanagement.ServiceManagementClient(self.config)
 
+    def _create_serviceusage(self):
+        """Create serviceusage API client.
+
+        Returns:
+            object: Client.
+
+        Raises:
+            ResourceNotSupported: Raised if polling is disabled for this API in
+            the GCP API client configuration.
+
+        """
+        if is_api_disabled(self.config, serviceusage.API_NAME):
+            raise ResourceNotSupported('Service Usage API disabled by server '
+                                       'configuration.')
+        return serviceusage.ServiceUsageClient(self.config)
+
     def _create_stackdriver_logging(self):
         """Create stackdriver_logging API client.
 
@@ -1301,6 +1352,47 @@ class ApiClientImpl(ApiClient):
         for table in self.bigquery.get_tables(dataset_reference['projectId'],
                                               dataset_reference['datasetId']):
             yield table, None
+
+    @create_lazy('bigtable', _create_bq)
+    def iter_bigtable_clusters(self, project_id, instance_id):
+        """Iterate Bigtable Clusters from GCP API.
+
+        Args:
+            project_id (str): The Project id.
+            instance_id (str): The Bigtable Instance id.
+
+        Raises:
+            ResourceNotSupported: Raised for all calls using this class.
+        """
+        raise ResourceNotSupported('Bigtable Clusters are not supported by '
+                                   'this API client')
+
+    @create_lazy('bigtable', _create_bq)
+    def iter_bigtable_instances(self, project_number):
+        """Iterate Bigtable Instances from GCP API.
+
+        Args:
+            project_number (str): The Project number.
+
+        Raises:
+            ResourceNotSupported: Raised for all calls using this class.
+        """
+        raise ResourceNotSupported('Bigtable Instances are not supported by '
+                                   'this API client')
+
+    @create_lazy('bigtable', _create_bq)
+    def iter_bigtable_tables(self, project_id, instance_id):
+        """Iterate Bigtable Tables from GCP API.
+
+        Args:
+            project_id (str): The Project id.
+            instance_id (str): The Bigtable Instance id.
+
+        Raises:
+            ResourceNotSupported: Raised for all calls using this class.
+        """
+        raise ResourceNotSupported('Bigtable Tables are not supported by '
+                                   'this API client')
 
     @create_lazy('cloudbilling', _create_cloudbilling)
     def fetch_billing_account_iam_policy(self, account_id):
@@ -1683,6 +1775,18 @@ class ApiClientImpl(ApiClient):
         """
         raise ResourceNotSupported('Compute Routers are not supported '
                                    'by this API client')
+
+    def iter_compute_securitypolicies(self, project_number):
+        """Iterate Compute Engine Security Policies from GCP API.
+
+        Args:
+            project_number (str): number of the project to query.
+
+        Raises:
+            ResourceNotSupported: Raised for all calls using this class.
+        """
+        raise ResourceNotSupported('Compute Security Policies are not '
+                                   'supported by this API client')
 
     @create_lazy('compute', _create_compute)
     def iter_compute_snapshots(self, project_number):
@@ -2510,7 +2614,7 @@ class ApiClientImpl(ApiClient):
         raise ResourceNotSupported('PubSub Topics are not supported by this '
                                    'API client')
 
-    @create_lazy('servicemanagement', _create_servicemanagement)
+    @create_lazy('serviceusage', _create_serviceusage)
     def fetch_services_enabled_apis(self, project_number):
         """Project enabled API services from gcp API call.
 
@@ -2518,10 +2622,10 @@ class ApiClientImpl(ApiClient):
             project_number (str): number of the project to query.
 
         Returns:
-            Tuple[list, AssetMetadata]:A list of ManagedService resource dicts
+            Tuple[list, AssetMetadata]:A list of Service resource dicts
                 and asset metadata that defaults to None for all GCP clients.
         """
-        return self.servicemanagement.get_enabled_apis(project_number), None
+        return self.serviceusage.get_enabled_apis(project_number), None
 
     def iter_spanner_instances(self, project_number):
         """Iterate Spanner Instances from GCP API.

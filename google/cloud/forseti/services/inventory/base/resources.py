@@ -27,6 +27,7 @@ from google.cloud.forseti.common.gcp_api import errors as api_errors
 from google.cloud.forseti.common.util import date_time
 from google.cloud.forseti.common.util import logger
 from google.cloud.forseti.common.util import string_formats
+from google.cloud.forseti.services import utils
 from google.cloud.forseti.services.inventory.base.gcp import (
     ResourceNotSupported)
 from google.cloud.forseti.services.inventory.base import iam_helpers
@@ -169,6 +170,7 @@ class Resource(object):
         self._warning = []
         self._timestamp = self._utcnow()
         self._inventory_key = None
+        self._full_resource_name = None
 
     @staticmethod
     def _utcnow():
@@ -237,6 +239,26 @@ class Resource(object):
         """
         return self._inventory_key
 
+    def get_full_resource_name(self):
+        """Gets the full unique resource name for this resource.
+
+        Builds the full name on first call and caches it.
+
+        Returns:
+            str: The full unique name for this resource.
+        """
+        if not self._full_resource_name:
+            type_name = utils.to_type_name(self.type(), self.key())
+            if self._root or not self.parent():
+                parent_full_res_name = ''
+            else:
+                parent_full_res_name = self.parent().get_full_resource_name()
+
+            self._full_resource_name = utils.to_full_resource_name(
+                parent_full_res_name, type_name)
+
+        return self._full_resource_name
+
     @staticmethod
     def type():
         """Get type of this resource.
@@ -303,10 +325,9 @@ class Resource(object):
         try:
             self.accept(visitor, stack)
         except Exception as e:
-            LOGGER.exception(e)
-            self.parent().add_warning(e)
-            visitor.update(self.parent())
-            visitor.on_child_error(e)
+            err_msg = 'Exception raised processing %s: %s' % (self, e)
+            LOGGER.exception(err_msg)
+            visitor.on_child_error(self.get_full_resource_name(), e)
 
     def accept(self, visitor, stack=None):
         """Accept of resource in visitor pattern.
@@ -341,16 +362,16 @@ class Resource(object):
             yielder = yielder_cls(self, visitor.get_client())
             try:
                 for resource in yielder.iter():
-                    res = resource
-
                     new_stack = stack + [self]
 
                     # Parallelization for resource subtrees.
-                    if res.should_dispatch():
-                        callback = partial(res.try_accept, visitor, new_stack)
+                    if resource.should_dispatch():
+                        callback = partial(resource.try_accept,
+                                           visitor,
+                                           new_stack)
                         visitor.dispatch(callback)
                     else:
-                        res.try_accept(visitor, new_stack)
+                        resource.try_accept(visitor, new_stack)
             except Exception as e:
                 # Use string phrases and not error codes since error codes
                 # can mean multiple things.
@@ -359,12 +380,12 @@ class Resource(object):
                             in skip_errors)):
                     pass
                 else:
-                    LOGGER.exception(e)
-                    self.add_warning(e)
-                    visitor.on_child_error(e)
+                    err_msg = 'Exception raised processing %s: %s' % (self, e)
+                    LOGGER.exception(err_msg)
+                    self.add_warning(err_msg)
         if self._warning:
-            visitor.update(self)
-
+            visitor.on_child_error(self.get_full_resource_name(),
+                                   self.get_warning())
     # pylint: enable=broad-except
 
     @cached('iam_policy')
@@ -635,11 +656,12 @@ class ResourceManagerOrganization(resource_class_factory('organization', None)):
             return FACTORIES['organization'].create_new(
                 data, metadata=metadata, root=root)
         except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-            LOGGER.warning('Unable to fetch Organization %s: %s',
-                           resource_key, e)
+            err_msg = ('Unable to fetch Organization from API %s: %s, creating '
+                       'fake resource.' % (resource_key, e))
+            LOGGER.warning(err_msg)
             data = {'name': resource_key}
             resource = FACTORIES['organization'].create_new(data, root=root)
-            resource.add_warning(e)
+            resource.add_warning(err_msg)
             return resource
 
     @cached('iam_policy')
@@ -656,8 +678,10 @@ class ResourceManagerOrganization(resource_class_factory('organization', None)):
             data, _ = client.fetch_crm_organization_iam_policy(self['name'])
             return data
         except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-            LOGGER.warning('Could not get IAM policy: %s', e)
-            self.add_warning(e)
+            err_msg = ('Could not get IAM policy for organization %s: %s' %
+                       (self.key(), e))
+            LOGGER.warning(err_msg)
+            self.add_warning(err_msg)
             return None
 
     def has_directory_resource_id(self):
@@ -713,10 +737,12 @@ class ResourceManagerFolder(resource_class_factory('folder', None)):
             return FACTORIES['folder'].create_new(
                 data, metadata=metadata, root=root)
         except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-            LOGGER.warning('Unable to fetch Folder %s: %s', resource_key, e)
+            err_msg = ('Unable to fetch Folder from API %s: %s, creating '
+                       'fake resource.' % (resource_key, e))
+            LOGGER.warning(err_msg)
             data = {'name': resource_key}
             resource = FACTORIES['folder'].create_new(data, root=root)
-            resource.add_warning(e)
+            resource.add_warning(err_msg)
             return resource
 
     def key(self):
@@ -749,8 +775,10 @@ class ResourceManagerFolder(resource_class_factory('folder', None)):
             data, _ = client.fetch_crm_folder_iam_policy(self['name'])
             return data
         except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-            LOGGER.warning('Could not get IAM policy: %s', e)
-            self.add_warning(e)
+            err_msg = ('Could not get IAM policy for folder %s: %s' %
+                       (self.key(), e))
+            LOGGER.warning(err_msg)
+            self.add_warning(err_msg)
             return None
 
 
@@ -788,10 +816,12 @@ class ResourceManagerProject(resource_class_factory('project', 'projectId')):
             return FACTORIES['project'].create_new(
                 data, metadata=metadata, root=root)
         except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-            LOGGER.warning('Unable to fetch Project %s: %s', resource_key, e)
+            err_msg = ('Unable to fetch Project from API %s: %s, creating '
+                       'fake resource.' % (resource_key, e))
+            LOGGER.warning(err_msg)
             data = {'name': resource_key}
             resource = FACTORIES['project'].create_new(data, root=root)
-            resource.add_warning(e)
+            resource.add_warning(err_msg)
             return resource
 
     @cached('iam_policy')
@@ -810,8 +840,10 @@ class ResourceManagerProject(resource_class_factory('project', 'projectId')):
                     project_number=self['projectNumber'])
                 return data
             except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-                LOGGER.warning('Could not get IAM policy: %s', e)
-                self.add_warning(e)
+                err_msg = ('Could not get IAM policy for project %s: %s' %
+                           (self.key(), e))
+                LOGGER.warning(err_msg)
+                self.add_warning(err_msg)
                 return None
 
         return {}
@@ -832,8 +864,10 @@ class ResourceManagerProject(resource_class_factory('project', 'projectId')):
                     project_number=self['projectNumber'])
                 return data
             except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-                LOGGER.warning('Could not get Billing Info: %s', e)
-                self.add_warning(e)
+                err_msg = ('Could not get Billing Info for project %s: %s' %
+                           (self.key(), e))
+                LOGGER.warning(err_msg)
+                self.add_warning(err_msg)
                 return None
         return {}
 
@@ -853,11 +887,14 @@ class ResourceManagerProject(resource_class_factory('project', 'projectId')):
                 enabled_apis, _ = client.fetch_services_enabled_apis(
                     project_number=self['projectNumber'])
             except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-                LOGGER.warning('Could not get Enabled APIs: %s', e)
-                self.add_warning(e)
+                err_msg = ('Could not get Enabled APIs for project %s: %s' %
+                           (self.key(), e))
+                LOGGER.warning(err_msg)
+                self.add_warning(err_msg)
 
         self._enabled_service_names = frozenset(
-            (api.get('serviceName') for api in enabled_apis))
+            (api.get('config', {}).get('name') for api in enabled_apis))
+
         return enabled_apis
 
     def should_dispatch(self):
@@ -1010,8 +1047,10 @@ class BigqueryDataSet(resource_class_factory('dataset', 'id')):
             self._set_cache('dataset_policy', dataset_policy)
             return iam_policy
         except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-            LOGGER.warning('Could not get Dataset IAM Policy: %s', e)
-            self.add_warning(e)
+            err_msg = ('Could not get Dataset IAM Policy for %s in project %s: '
+                       '%s' % (self.key(), self.parent().key(), e))
+            LOGGER.warning(err_msg)
+            self.add_warning(err_msg)
             return None
 
     @cached('dataset_policy')
@@ -1034,14 +1073,41 @@ class BigqueryDataSet(resource_class_factory('dataset', 'id')):
             self._set_cache('iam_policy', iam_policy)
             return dataset_policy
         except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-            LOGGER.warning('Could not get Dataset Policy: %s', e)
-            self.add_warning(e)
+            err_msg = ('Could not get Dataset Policy for %s in project %s: '
+                       '%s' % (self.key(), self.parent().key(), e))
+            LOGGER.warning(err_msg)
+            self.add_warning(err_msg)
             return None
 
 
 # BigqueryTable resource classes
 class BigqueryTable(resource_class_factory('bigquery_table', 'id')):
     """The Resource implementation for bigquery table."""
+
+
+# Bigtable resource classes
+class BigtableCluster(resource_class_factory('bigtable_cluster', 'name',
+                                             hash_key=True)):
+    """The Resource implementation for Bigtable Cluster."""
+
+
+class BigtableInstance(resource_class_factory('bigtable_instance', 'name',
+                                              hash_key=True)):
+    """The Resource implementation for Bigtable Instance."""
+
+    @property
+    def instance_id(self):
+        """Get instance id of the Bigtable Instance
+
+        Returns:
+            str: id of this resource.
+        """
+        return self['name'].split('/')[-1]
+
+
+class BigtableTable(resource_class_factory('bigtable_table', 'name',
+                                           hash_key=True)):
+    """The Resource implementation for Bigtable Table."""
 
 
 # Billing resource classes
@@ -1070,8 +1136,10 @@ class BillingAccount(resource_class_factory('billing_account', None)):
             data, _ = client.fetch_billing_account_iam_policy(self['name'])
             return data
         except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-            LOGGER.warning('Could not get IAM policy: %s', e)
-            self.add_warning(e)
+            err_msg = ('Could not get Billing Account IAM Policy for %s: '
+                       '%s' % (self.key(), e))
+            LOGGER.warning(err_msg)
+            self.add_warning(err_msg)
             return None
 
 
@@ -1171,6 +1239,11 @@ class ComputeRouter(resource_class_factory('compute_router', 'id')):
     """The Resource implementation for Compute Router."""
 
 
+class ComputeSecurityPolicy(resource_class_factory('compute_securitypolicy',
+                                                   'id')):
+    """The Resource implementation for Compute SecurityPolicy."""
+
+
 class ComputeSnapshot(resource_class_factory('snapshot', 'id')):
     """The Resource implementation for Compute Snapshot."""
 
@@ -1255,8 +1328,10 @@ class DataprocCluster(resource_class_factory('dataproc_cluster',
                 TypeError) as e:
             if isinstance(e, TypeError):
                 e = 'Cluster has no labels.'
-            LOGGER.warning('Could not get IAM policy: %s', e)
-            self.add_warning('Could not get IAM policy: %s' % e)
+            err_msg = ('Could not get Dataproc cluster IAM Policy for %s in '
+                       'project %s: %s' % (self.key(), self.parent().key(), e))
+            LOGGER.warning(err_msg)
+            self.add_warning(err_msg)
             return None
 
 
@@ -1300,8 +1375,10 @@ class IamServiceAccount(resource_class_factory('serviceaccount', 'uniqueId')):
                 self['name'], self['uniqueId'])
             return data
         except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-            LOGGER.warning('Could not get IAM policy: %s', e)
-            self.add_warning(e)
+            err_msg = ('Could not get Service Account IAM Policy for %s in '
+                       'project %s: %s' % (self.key(), self.parent().key(), e))
+            LOGGER.warning(err_msg)
+            self.add_warning(err_msg)
             return None
 
 
@@ -1338,8 +1415,10 @@ class KmsCryptoKey(resource_class_factory('kms_cryptokey', 'name',
             data, _ = client.fetch_kms_cryptokey_iam_policy(self['name'])
             return data
         except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-            LOGGER.warning('Could not get IAM policy: %s', e)
-            self.add_warning(e)
+            err_msg = ('Could not get Crypto Key IAM Policy for %s in project '
+                       '%s: %s' % (self['name'], self.parent().key(), e))
+            LOGGER.warning(err_msg)
+            self.add_warning(err_msg)
             return None
 
 
@@ -1366,8 +1445,10 @@ class KmsKeyRing(resource_class_factory('kms_keyring', 'name',
             data, _ = client.fetch_kms_keyring_iam_policy(self['name'])
             return data
         except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-            LOGGER.warning('Could not get IAM policy: %s', e)
-            self.add_warning(e)
+            err_msg = ('Could not get Key Ring IAM Policy for %s in project '
+                       '%s: %s' % (self['name'], self.parent().key(), e))
+            LOGGER.warning(err_msg)
+            self.add_warning(err_msg)
             return None
 
 
@@ -1396,8 +1477,10 @@ class KubernetesCluster(resource_class_factory('kubernetes_cluster',
                              self._data)
             return {}
         except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-            LOGGER.warning('Could not get Service Config: %s', e)
-            self.add_warning(e)
+            err_msg = ('Could not get Cluster service config for %s : %s' %
+                       (self['selfLink'], e))
+            LOGGER.warning(err_msg)
+            self.add_warning(err_msg)
             return None
 
     def location(self):
@@ -1526,8 +1609,11 @@ class PubsubSubscription(resource_class_factory('pubsub_subscription', 'name',
             data, _ = client.fetch_pubsub_subscription_iam_policy(self['name'])
             return data
         except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-            LOGGER.warning('Could not get IAM policy: %s', e)
-            self.add_warning(e)
+            err_msg = ('Could not get PubSub Subscription IAM Policy for %s in '
+                       'project %s: %s' %
+                       (self['name'], self.parent().key(), e))
+            LOGGER.warning(err_msg)
+            self.add_warning(err_msg)
             return None
 
 
@@ -1549,8 +1635,11 @@ class PubsubTopic(resource_class_factory('pubsub_topic', 'name',
             data, _ = client.fetch_pubsub_topic_iam_policy(self['name'])
             return data
         except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-            LOGGER.warning('Could not get IAM policy: %s', e)
-            self.add_warning(e)
+            err_msg = ('Could not get PubSub Topic IAM Policy for %s in '
+                       'project %s: %s' %
+                       (self['name'], self.parent().key(), e))
+            LOGGER.warning(err_msg)
+            self.add_warning(err_msg)
             return None
 
 
@@ -1583,8 +1672,10 @@ class StorageBucket(resource_class_factory('bucket', 'id')):
             data, _ = client.fetch_storage_bucket_iam_policy(self.key())
             return data
         except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-            LOGGER.warning('Could not get IAM policy: %s', e)
-            self.add_warning(e)
+            err_msg = ('Could not get Bucket IAM Policy for %s in project %s: '
+                       '%s' % (self.key(), self.parent().key(), e))
+            LOGGER.warning(err_msg)
+            self.add_warning(err_msg)
             return None
 
     @cached('gcs_policy')
@@ -1611,8 +1702,10 @@ class StorageBucket(resource_class_factory('bucket', 'id')):
                 self.parent()['projectNumber'])
             return data
         except (api_errors.ApiExecutionError, ResourceNotSupported) as e:
-            LOGGER.warning('Could not get bucket Access Control policy: %s', e)
-            self.add_warning(e)
+            err_msg = ('Could not get Bucket ACL Policy for %s in project %s: '
+                       '%s' % (self.key(), self.parent().key(), e))
+            LOGGER.warning(err_msg)
+            self.add_warning(err_msg)
             return None
 
 
@@ -1890,6 +1983,61 @@ class BigqueryTableIterator(resource_iter_class_factory(
     """The Resource iterator implementation for Bigquery Table."""
 
 
+class BigtableClusterIterator(ResourceIterator):
+    """The Resource iterator implementation for Bigtable Cluster"""
+
+    def iter(self):
+        """Resource iterator.
+
+        Yields:
+            Resource: BigtableCluster created
+        """
+        gcp = self.client
+        if not getattr(self.resource, 'instance_id', ''):
+            return
+
+        try:
+            for data, metadata in gcp.iter_bigtable_clusters(
+                    project_id=self.resource.parent()['projectId'],
+                    instance_id=self.resource.instance_id):
+                yield FACTORIES['bigtable_cluster'].create_new(
+                    data, metadata=metadata)
+        except ResourceNotSupported as e:
+            # API client doesn't support this resource, ignore.
+            LOGGER.debug(e)
+
+
+class BigtableInstanceIterator(resource_iter_class_factory(
+        api_method_name='iter_bigtable_instances',
+        resource_name='bigtable_instance',
+        api_method_arg_key='projectNumber')):
+    """The Resource iterator implementation for Bigtable Instance."""
+
+
+class BigtableTableIterator(ResourceIterator):
+    """The Resource iterator implementation for Bigtable Table"""
+
+    def iter(self):
+        """Resource iterator.
+
+        Yields:
+            Resource: BigtableTable created
+        """
+        gcp = self.client
+        if not getattr(self.resource, 'instance_id', ''):
+            return
+
+        try:
+            for data, metadata in gcp.iter_bigtable_tables(
+                    project_id=self.resource.parent()['projectId'],
+                    instance_id=self.resource.instance_id):
+                yield FACTORIES['bigtable_table'].create_new(
+                    data, metadata=metadata)
+        except ResourceNotSupported as e:
+            # API client doesn't support this resource, ignore.
+            LOGGER.debug(e)
+
+
 class BillingAccountIterator(resource_iter_class_factory(
         api_method_name='iter_billing_accounts',
         resource_name='billing_account')):
@@ -2077,6 +2225,12 @@ class ComputeRouterIterator(compute_iter_class_factory(
         api_method_name='iter_compute_routers',
         resource_name='compute_router')):
     """The Resource iterator implementation for Compute Router."""
+
+
+class ComputeSecurityPolicyIterator(compute_iter_class_factory(
+        api_method_name='iter_compute_securitypolicies',
+        resource_name='compute_securitypolicy')):
+    """The Resource iterator implementation for Compute SecurityPolicy."""
 
 
 class ComputeSnapshotIterator(compute_iter_class_factory(
@@ -2604,6 +2758,7 @@ FACTORIES = {
         'contains': [
             AppEngineAppIterator,
             BigqueryDataSetIterator,
+            BigtableInstanceIterator,
             CloudSqlInstanceIterator,
             ComputeAddressIterator,
             ComputeAutoscalerIterator,
@@ -2626,6 +2781,7 @@ FACTORIES = {
             ComputeNetworkIterator,
             ComputeProjectIterator,
             ComputeRouterIterator,
+            ComputeSecurityPolicyIterator,
             ComputeSnapshotIterator,
             ComputeSslCertificateIterator,
             ComputeSubnetworkIterator,
@@ -2697,6 +2853,24 @@ FACTORIES = {
     'bigquery_table': ResourceFactory({
         'dependsOn': ['bigquery_dataset'],
         'cls': BigqueryTable,
+        'contains': []}),
+
+    'bigtable_cluster': ResourceFactory({
+        'dependsOn': ['bigtable_instance'],
+        'cls': BigtableCluster,
+        'contains': []}),
+
+    'bigtable_instance': ResourceFactory({
+        'dependsOn': ['project'],
+        'cls': BigtableInstance,
+        'contains': [
+            BigtableClusterIterator,
+            BigtableTableIterator
+        ]}),
+
+    'bigtable_table': ResourceFactory({
+        'dependsOn': ['bigtable_instance'],
+        'cls': BigtableTable,
         'contains': []}),
 
     'cloudsql_instance': ResourceFactory({
@@ -2807,6 +2981,11 @@ FACTORIES = {
     'compute_router': ResourceFactory({
         'dependsOn': ['project'],
         'cls': ComputeRouter,
+        'contains': []}),
+
+    'compute_securitypolicy': ResourceFactory({
+        'dependsOn': ['project'],
+        'cls': ComputeSecurityPolicy,
         'contains': []}),
 
     'compute_snapshot': ResourceFactory({

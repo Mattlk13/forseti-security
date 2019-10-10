@@ -99,12 +99,12 @@ inventory:
           max_calls: 9
           period: 1.0
           disable_polling: False
-        securitycenter:
-          max_calls: 1
-          period: 1.1
-          disable_polling: False
         servicemanagement:
           max_calls: 2
+          period: 1.1
+          disable_polling: False
+        serviceusage:
+          max_calls: 4
           period: 1.1
           disable_polling: False
         sqladmin:
@@ -123,6 +123,14 @@ inventory:
         # Defaults to 3600 if not set.
         api_timeout: 3600
 
+
+        # Path to the CAI dump files. This is used when you have access to the
+        # dump files directly and would like forseti to parse them into the
+        # gcp_inventory table to use scanner / explainer on top of the data.
+        # E.g. cai_dump_file_gcs_paths: ['gs://my-bucket/123-iam-policy.dump',
+        #                                'gs://my-bucket/123-resource.dump']
+        # cai_dump_file_gcs_paths: []
+
         # Optional list of asset types supported by Cloud Asset inventory API.
         # https://cloud.google.com/resource-manager/docs/cloud-asset-inventory/overview
         # If included, only the asset types listed will be included in the
@@ -140,6 +148,9 @@ inventory:
         #    - appengine.googleapis.com/Version
         #    - bigquery.googleapis.com/Dataset
         #    - bigquery.googleapis.com/Table
+        #    - bigtableadmin.googleapis.com/Cluster
+        #    - bigtableadmin.googleapis.com/Instance
+        #    - bigtableadmin.googleapis.com/Table
         #    - cloudbilling.googleapis.com/BillingAccount
         #    - cloudkms.googleapis.com/CryptoKey
         #    - cloudkms.googleapis.com/CryptoKeyVersion
@@ -172,6 +183,7 @@ inventory:
         #    - compute.googleapis.com/RegionBackendService
         #    - compute.googleapis.com/Route
         #    - compute.googleapis.com/Router
+        #    - compute.googleapis.com/SecurityPolicy
         #    - compute.googleapis.com/Snapshot
         #    - compute.googleapis.com/SslCertificate
         #    - compute.googleapis.com/Subnetwork
@@ -277,6 +289,10 @@ scanner:
 ##############################################################################
 
 notifier:
+    api_quota:
+        securitycenter:
+            max_calls: 14
+            period: 1.0
 
     # Provide connector details
     email_connector:

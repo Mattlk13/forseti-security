@@ -27,12 +27,6 @@ RUN groupadd -g $GID forseti && \
     mkdir -p ${HOME}/forseti-security && \
     chown -R forseti:forseti ${HOME}
 
-# Install host dependencies.
-RUN apt-get update  && \
-    apt-get install --no-install-recommends -y libmariadb3 && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
 WORKDIR ${WORK_DIR}
 
 USER forseti
@@ -62,6 +56,8 @@ FROM pre-build AS build
 COPY --chown=forseti:forseti . ${WORK_DIR}
 
 RUN pip install --no-cache-dir --upgrade -r requirements.txt --user
+
+RUN pip install --no-cache-dir --upgrade google-cloud-profiler --user
 
 # Install Forseti Security.
 RUN python setup.py install --user
